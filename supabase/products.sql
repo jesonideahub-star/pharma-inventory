@@ -49,6 +49,13 @@ ALTER TABLE public.product_batches
   ADD COLUMN IF NOT EXISTS received_date date,
   ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();
 
+-- Empty/null SKUs collide with UNIQUE products_sku_key on the next insert.
+UPDATE public.products
+SET sku = 'PS-' || upper(replace(id::text, '-', ''))
+WHERE sku IS NULL OR btrim(sku) = '';
+
+ALTER TABLE public.products ALTER COLUMN sku DROP DEFAULT;
+
 CREATE INDEX IF NOT EXISTS idx_products_lot_number ON public.products (lot_number);
 CREATE INDEX IF NOT EXISTS idx_products_sku ON public.products (sku);
 CREATE INDEX IF NOT EXISTS idx_products_brand_name ON public.products (brand_name);

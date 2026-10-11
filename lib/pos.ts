@@ -232,25 +232,80 @@ export async function deductStockFifo(
   return allocations;
 }
 
-/** Receive stock from a purchase order (adds to inventory). */
+export type ReceiveStockOptions = {
+  unitCost?: number;
+  supplierId?: string | null;
+  batchNumber?: string | null;
+  expiryDate?: string | null;
+};
+
+async function incrementProductQuantity(
+  supabase: SupabaseClient,
+  productId: string,
+  quantity: number,
+  options?: ReceiveStockOptions
+): Promise<void> {
+  const row = await loadFlatProductRow(supabase, productId, "single");
+  if (!row) throw new Error("Product not found");
+
+  const patch: Record<string, string | number | null> = {
+    quantity: (row.quantity ?? 0) + quantity,
+  };
+  const expiry = options?.expiryDate?.trim() || null;
+  if (expiry) {
+    patch.expiry_date = expiry;
+    patch.exp_date = expiry;
+  }
+  if (options?.unitCost != null && !Number.isNaN(options.unitCost)) {
+    patch.cost = options.unitCost;
+    patch.purchase_price = options.unitCost;
+  }
+  const supplier = options?.supplierId?.trim() || null;
+  if (supplier) {
+    patch.supplier_id = supplier;
+    patch.supplier = supplier;
+  }
+  const lot = options?.batchNumber?.trim() || null;
+  if (lot) patch.lot_number = lot;
+
+  let payload = patch;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const { error } = await supabase
+      .from("products")
+      .update(payload)
+      .eq("id", productId);
+    if (!error) return;
+
+    const extraKeys = Object.keys(payload).filter((key) => key !== "quantity");
+    const badKeys = extraKeys.filter((key) =>
+      error.message.toLowerCase().includes(key.toLowerCase())
+    );
+    if (badKeys.length === 0) {
+      if (extraKeys.length > 0) {
+        payload = { quantity: patch.quantity };
+        continue;
+      }
+      throw new Error(error.message);
+    }
+    const next = { ...payload };
+    for (const key of badKeys) delete next[key];
+    payload = next;
+  }
+
+  throw new Error("Could not update product stock");
+}
+
+/** Receive stock from a purchase (adds to inventory). */
 export async function receiveStockForPo(
   supabase: SupabaseClient,
   productId: string,
   quantity: number,
   referenceNo: string,
-  options?: { unitCost?: number; supplierId?: string | null }
+  options?: ReceiveStockOptions
 ): Promise<StockAllocation[]> {
-  if (await isFlatRegister(supabase)) {
-    const row = await loadFlatProductRow(supabase, productId, "single");
-    if (!row) throw new Error("Product not found");
-
-    const current = row.quantity ?? 0;
-    const { error: updateError } = await supabase
-      .from("products")
-      .update({ quantity: current + quantity })
-      .eq("id", productId);
-
-    if (updateError) throw new Error(updateError.message);
+  const existing = await loadFlatProductRow(supabase, productId, "maybe");
+  if (existing) {
+    await incrementProductQuantity(supabase, productId, quantity, options);
 
     void supabase.from("inventory_transactions").insert({
       product_id: productId,
@@ -264,13 +319,16 @@ export async function receiveStockForPo(
   }
 
   const today = new Date().toISOString().slice(0, 10);
+  const batchNumber =
+    options?.batchNumber?.trim() ||
+    `${referenceNo || "PO"}-${Date.now().toString(36).slice(-4)}`;
   const { data: batch, error: batchError } = await supabase
     .from("product_batches")
     .insert({
       product_id: productId,
       supplier_id: options?.supplierId ?? null,
-      batch_number: `${referenceNo}-${Date.now().toString(36).slice(-4)}`,
-      expiry_date: null,
+      batch_number: batchNumber,
+      expiry_date: options?.expiryDate?.trim() || null,
       quantity_received: quantity,
       quantity_remaining: quantity,
       purchase_price: options?.unitCost ?? 0,

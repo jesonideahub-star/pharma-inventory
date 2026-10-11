@@ -5,7 +5,7 @@ import { requireAdmin } from "@/lib/admin-guard";
 import { insertCustomer, updateCustomerRow } from "@/lib/customers-db";
 import { convertPurchaseOrderToSalesInvoice } from "@/lib/purchase-order-invoice";
 import { autoGeneratePurchaseOrder } from "@/lib/purchase-orders";
-import { deductStockFifo } from "@/lib/pos";
+import { deductStockFifo, receiveStockForPo } from "@/lib/pos";
 import { revalidateInventory, revalidateProductsPage } from "@/lib/revalidate";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -176,7 +176,7 @@ export async function deleteCustomer(formData: FormData) {
   redirect("/customers?success=Customer removed");
 }
 
-/** Receive stock: creates a product batch plus a matching stock-in transaction. */
+/** Receive stock: adds quantity on the product register (or a new batch). */
 export async function stockIn(formData: FormData) {
   const supabase = createAdminClient();
   const productId = String(formData.get("product_id"));
@@ -186,35 +186,24 @@ export async function stockIn(formData: FormData) {
     redirect("/stock?error=Enter a valid product and quantity");
   }
 
-  const { data: batch, error: batchError } = await supabase
-    .from("product_batches")
-    .insert({
-      product_id: productId,
-      supplier_id: String(formData.get("supplier_id") ?? "") || null,
-      batch_number: String(formData.get("batch_number") ?? "").trim(),
-      expiry_date: String(formData.get("expiry_date")) || null,
-      quantity_received: quantity,
-      quantity_remaining: quantity,
-      purchase_price: Number(formData.get("purchase_price") ?? 0),
-    })
-    .select("id")
-    .single();
-  if (batchError) {
-    redirect(`/stock?error=${encodeURIComponent(batchError.message)}`);
+  try {
+    await receiveStockForPo(
+      supabase,
+      productId,
+      quantity,
+      String(formData.get("reference_no") ?? "").trim() || "purchase",
+      {
+        unitCost: Number(formData.get("purchase_price") ?? 0),
+        supplierId: String(formData.get("supplier_id") ?? "").trim() || null,
+        batchNumber: String(formData.get("batch_number") ?? "").trim() || null,
+        expiryDate: String(formData.get("expiry_date") ?? "").trim() || null,
+      }
+    );
+  } catch (e) {
+    redirect(`/stock?error=${encodeURIComponent((e as Error).message)}`);
   }
 
-  const { error: txError } = await supabase
-    .from("inventory_transactions")
-    .insert({
-      product_id: productId,
-      batch_id: batch.id,
-      transaction_type: "stock_in",
-      quantity,
-      reference_no: String(formData.get("reference_no") ?? "").trim() || null,
-    });
-  if (txError) redirect(`/stock?error=${encodeURIComponent(txError.message)}`);
-
-  revalidateInventory("stock");
+  revalidateInventory("stock", "products");
   redirect("/stock?success=Stock received");
 }
 

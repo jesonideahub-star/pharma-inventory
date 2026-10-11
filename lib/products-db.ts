@@ -32,6 +32,7 @@ type BatchRow = {
 
 const REGISTER_COLUMN_CANDIDATES = [
   "product_name",
+  "sku",
   "lot_number",
   "brand",
   "brand_name",
@@ -142,6 +143,35 @@ function missingColumn(message: string, column: string): boolean {
       lower.includes("schema cache") ||
       lower.includes("does not exist"))
   );
+}
+
+function isUniqueSkuError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("products_sku_key") ||
+    (lower.includes("duplicate") && lower.includes("sku"))
+  );
+}
+
+/** Unique SKU for databases that enforce products_sku_key. */
+export function generateProductSku(
+  productName: string,
+  lotNumber?: string
+): string {
+  const slug = productName
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 18);
+  const lot = (lotNumber ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "")
+    .slice(0, 8);
+  const unique =
+    `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`.toUpperCase();
+  return [slug || "SKU", lot, unique].filter(Boolean).join("-");
 }
 
 function readRackLocation(row: Record<string, unknown>): string | null {
@@ -301,8 +331,11 @@ async function writeProductsRow(
 ): Promise<{ id: string | null; error: string | null }> {
   let columns = await getProductColumns(supabase);
   let row = pickKnownColumns(payload, columns);
+  if (!productId && typeof payload.sku === "string" && payload.sku && !row.sku) {
+    row.sku = payload.sku;
+  }
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 6; attempt++) {
     if (Object.keys(row).length === 0) {
       return { id: null, error: "Could not save product" };
     }
@@ -340,6 +373,17 @@ async function writeProductsRow(
 
     if (!result.error) {
       return { id: productId ?? null, error: "Could not save product" };
+    }
+
+    if (!productId && isUniqueSkuError(result.error.message)) {
+      const name =
+        typeof payload.product_name === "string" ? payload.product_name : "SKU";
+      const lot =
+        typeof payload.lot_number === "string" ? payload.lot_number : "";
+      row.sku = generateProductSku(name, lot);
+      columns.add("sku");
+      cachedProductColumns = columns;
+      continue;
     }
 
     const badKeys = Object.keys(row).filter((key) =>
@@ -512,7 +556,9 @@ async function insertProductRow(
   supabase: SupabaseClient,
   input: ProductEntryInput
 ): Promise<{ productId: string | null; error: string | null }> {
-  const created = await writeProductsRow(supabase, buildRegisterPayload(input));
+  const payload = buildRegisterPayload(input);
+  payload.sku = generateProductSku(input.product_name, input.lot_number);
+  const created = await writeProductsRow(supabase, payload);
   return { productId: created.id, error: created.error };
 }
 

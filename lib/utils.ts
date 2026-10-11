@@ -97,6 +97,7 @@ export const PRODUCT_UOM_OPTIONS = [
   { value: "vial", label: "vial" },
   { value: "box", label: "box" },
   { value: "btl", label: "btl" },
+  { value: "gls", label: "gls" },
 ] as const;
 
 export type ProductUom = (typeof PRODUCT_UOM_OPTIONS)[number]["value"];
@@ -115,6 +116,11 @@ const PRODUCT_UOM_ALIASES: Record<string, ProductUom> = {
   btl: "btl",
   bottle: "btl",
   bottles: "btl",
+  gls: "gls",
+  gl: "gls",
+  gal: "gls",
+  gallon: "gls",
+  gallons: "gls",
 };
 
 export function normalizeProductUom(unit: unknown): ProductUom | null {
