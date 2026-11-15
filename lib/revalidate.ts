@@ -5,7 +5,7 @@ import { CACHE_TAGS, type CacheTag } from "@/lib/query-cache";
 const GROUPS = {
   products: ["/products", "/stock", "/expiry", "/pos", "/scan", "/forecast"],
   suppliers: ["/suppliers", "/orders"],
-  customers: ["/customers", "/pos"],
+  customers: ["/customers", "/pos", "/stock"],
   stock: ["/", "/stock", "/expiry", "/products", "/pos", "/scan"],
   branches: ["/branches"],
   orders: ["/orders"],

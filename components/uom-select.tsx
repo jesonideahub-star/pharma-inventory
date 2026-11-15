@@ -47,7 +47,7 @@ export function UomSelect({
         ) : null}
         {PRODUCT_UOM_OPTIONS.map((option) => (
           <option key={option.value} value={option.value}>
-            {option.value}
+            {option.label}
           </option>
         ))}
       </select>

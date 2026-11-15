@@ -14,7 +14,6 @@ import {
 } from "@/components/ui";
 import { listAuthUsersForLogin } from "@/lib/auth-users";
 import {
-  getBranches,
   getUserById,
   getUsers,
   isSupabaseConfigured,
@@ -45,7 +44,7 @@ export default async function UsersPage({
       <>
         <PageHeader
           title="User accounts"
-          description="Create and manage staff accounts, roles, and branch assignments."
+          description="Create and manage staff accounts and roles."
         />
         <Card>
           <p className="text-sm text-slate-600">
@@ -61,9 +60,8 @@ export default async function UsersPage({
     );
   }
 
-  const [users, branches, editing, authUsers] = await Promise.all([
+  const [users, editing, authUsers] = await Promise.all([
     getUsers(),
-    getBranches(),
     edit ? getUserById(edit) : Promise.resolve(null),
     listAuthUsersForLogin().catch(() => []),
   ]);
@@ -173,24 +171,9 @@ export default async function UsersPage({
               </label>
               <RoleSelect id="edit_role" defaultValue={editing.role} />
             </div>
-            <div>
-              <label className={labelClass} htmlFor="edit_branch_id">
-                Branch
-              </label>
-              <select
-                id="edit_branch_id"
-                name="branch_id"
-                defaultValue={editing.branch_id ?? ""}
-                className={inputClass}
-              >
-                <option value="">No branch assigned</option>
-                {branches.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {editing.branch_id ? (
+              <input type="hidden" name="branch_id" value={editing.branch_id} />
+            ) : null}
             <div className="flex flex-wrap gap-2 sm:col-span-2 lg:col-span-3">
               <button type="submit" className={buttonClass}>
                 Save changes

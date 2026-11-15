@@ -2,3 +2,10 @@
 
 ALTER TABLE public.prescriptions
   ADD COLUMN IF NOT EXISTS prescription_text text;
+
+
+
+
+
+
+

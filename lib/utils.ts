@@ -91,13 +91,14 @@ export function formatDisplayName(name: string): string {
   return `${first} ${lastInitial}.`;
 }
 
-/** Standard product unit-of-measure codes (abbreviations only in UI). */
+/** Standard product unit-of-measure codes. */
 export const PRODUCT_UOM_OPTIONS = [
-  { value: "pcs", label: "pcs" },
-  { value: "vial", label: "vial" },
-  { value: "box", label: "box" },
-  { value: "btl", label: "btl" },
-  { value: "gls", label: "gls" },
+  { value: "pcs", label: "PCS" },
+  { value: "vial", label: "VIAL" },
+  { value: "box", label: "BOX" },
+  { value: "btl", label: "BTL" },
+  { value: "gls", label: "GLS (Gallons)" },
+  { value: "pcks", label: "PCKS (Packs)" },
 ] as const;
 
 export type ProductUom = (typeof PRODUCT_UOM_OPTIONS)[number]["value"];
@@ -121,6 +122,10 @@ const PRODUCT_UOM_ALIASES: Record<string, ProductUom> = {
   gal: "gls",
   gallon: "gls",
   gallons: "gls",
+  pcks: "pcks",
+  pck: "pcks",
+  pack: "pcks",
+  packs: "pcks",
 };
 
 export function normalizeProductUom(unit: unknown): ProductUom | null {

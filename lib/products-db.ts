@@ -32,6 +32,8 @@ type BatchRow = {
 
 const REGISTER_COLUMN_CANDIDATES = [
   "product_name",
+  "name",
+  "generic_name",
   "sku",
   "lot_number",
   "brand",
@@ -191,8 +193,11 @@ function buildRegisterPayload(
   const unit = normalizeProductUom(input.unit) ?? "pcs";
   const rack = input.rack_location?.trim() || null;
   const supplier = input.supplier_id?.trim() || null;
+  const productName = input.product_name.trim();
   return {
-    product_name: input.product_name.trim(),
+    product_name: productName,
+    name: productName,
+    generic_name: productName,
     // Optional, but the column is NOT NULL in some schemas — store "".
     lot_number: input.lot_number.trim(),
     brand,
@@ -323,6 +328,56 @@ function pickKnownColumns(
   return row;
 }
 
+function isNoRowsError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("0 rows") ||
+    lower.includes("cannot coerce") ||
+    lower.includes("pgrst116")
+  );
+}
+
+async function lookupSavedProductId(
+  supabase: SupabaseClient,
+  productId: string | undefined,
+  sku: string | null
+): Promise<string | null> {
+  if (productId) return productId;
+  if (!sku) return null;
+  const { data } = await supabase
+    .from("products")
+    .select("id")
+    .eq("sku", sku)
+    .maybeSingle();
+  return data?.id ? String(data.id) : null;
+}
+
+async function finishProductWrite(
+  supabase: SupabaseClient,
+  payload: Record<string, string | number | null>,
+  row: Record<string, string | number | null>,
+  savedId: string
+): Promise<{ id: string; error: null }> {
+  const rack =
+    typeof payload.rack_location === "string"
+      ? payload.rack_location
+      : typeof payload.location === "string"
+        ? payload.location
+        : typeof payload.rack === "string"
+          ? payload.rack
+          : null;
+  const wroteRack =
+    !!rack?.trim() &&
+    RACK_WRITE_COLUMNS.some((col) => {
+      const value = row[col];
+      return typeof value === "string" && value.trim() === rack.trim();
+    });
+  if (rack?.trim() && !wroteRack) {
+    await patchRackLocation(supabase, savedId, rack);
+  }
+  return { id: savedId, error: null };
+}
+
 /** Single round-trip write; strips unknown columns from cache on schema errors. */
 async function writeProductsRow(
   supabase: SupabaseClient,
@@ -351,31 +406,24 @@ async function writeProductsRow(
 
     if (!result.error && result.data) {
       const savedId = productId ?? String(result.data.id);
-      const rack =
-        typeof payload.rack_location === "string"
-          ? payload.rack_location
-          : typeof payload.location === "string"
-            ? payload.location
-            : typeof payload.rack === "string"
-              ? payload.rack
-              : null;
-      const wroteRack =
-        !!rack?.trim() &&
-        RACK_WRITE_COLUMNS.some((col) => {
-          const value = row[col];
-          return typeof value === "string" && value.trim() === rack.trim();
-        });
-      if (rack?.trim() && !wroteRack) {
-        await patchRackLocation(supabase, savedId, rack);
+      return finishProductWrite(supabase, payload, row, savedId);
+    }
+
+    if (!result.error || isNoRowsError(result.error.message)) {
+      const savedId = await lookupSavedProductId(
+        supabase,
+        productId,
+        typeof row.sku === "string" ? row.sku : null
+      );
+      if (savedId) {
+        return finishProductWrite(supabase, payload, row, savedId);
       }
-      return { id: savedId, error: null };
+      if (!result.error) {
+        return { id: productId ?? null, error: "Could not save product" };
+      }
     }
 
-    if (!result.error) {
-      return { id: productId ?? null, error: "Could not save product" };
-    }
-
-    if (!productId && isUniqueSkuError(result.error.message)) {
+    if (!productId && result.error && isUniqueSkuError(result.error.message)) {
       const name =
         typeof payload.product_name === "string" ? payload.product_name : "SKU";
       const lot =
@@ -400,7 +448,7 @@ async function writeProductsRow(
     cachedProductColumns = columns;
   }
 
-  return { id: null, error: "Could not save product" };
+  return { id: null, error: "Could not save product — check required columns and try again" };
 }
 
 function parseProductJoin(value: unknown) {

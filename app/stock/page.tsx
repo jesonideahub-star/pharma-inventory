@@ -1,6 +1,7 @@
 import { StockWorkspace } from "@/components/stock-workspace";
 import { PageHeader, SetupNotice } from "@/components/ui";
 import {
+  getCustomers,
   getProductsWithStock,
   getSuppliers,
   getTransactions,
@@ -24,9 +25,10 @@ export default async function StockPage({
     );
   }
 
-  const [products, suppliers, transactions] = await Promise.all([
+  const [products, suppliers, customers, transactions] = await Promise.all([
     getProductsWithStock(),
     getSuppliers(),
+    getCustomers(),
     getTransactions(),
   ]);
 
@@ -34,6 +36,7 @@ export default async function StockPage({
     <StockWorkspace
       initialProducts={products}
       initialSuppliers={suppliers}
+      initialCustomers={customers}
       initialTransactions={transactions}
       initialSuccess={success}
       initialError={error}

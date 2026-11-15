@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { insertCustomer } from "@/lib/customers-db";
 import { hasServiceRoleKey } from "@/lib/env";
 import { deductStockFifo, generateInvoiceNumber, receiveStockForPo } from "@/lib/pos";
 import { issueReceiptForSale } from "@/lib/receipt";
@@ -6,6 +7,35 @@ import { revalidateInventory } from "@/lib/revalidate";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getActiveUser } from "@/lib/user-session";
 import { normalizeProductUom } from "@/lib/utils";
+
+const PAYMENT_METHODS = new Set(["cash", "card", "gcash"]);
+
+function parsePaymentMethod(value: unknown): string {
+  const raw = String(value ?? "cash").trim().toLowerCase();
+  return PAYMENT_METHODS.has(raw) ? raw : "cash";
+}
+
+async function resolveCustomerId(
+  supabase: ReturnType<typeof createAdminClient>,
+  body: Record<string, unknown>
+): Promise<string | null> {
+  const existing = String(body.customer_id ?? "").trim();
+  if (existing) return existing;
+
+  const name = String(
+    body.customer_name ?? body.new_customer_name ?? ""
+  ).trim();
+  if (!name) return null;
+
+  const { id, error } = await insertCustomer(supabase, {
+    full_name: name,
+    phone: String(body.customer_phone ?? "").trim() || null,
+    email: String(body.customer_email ?? "").trim() || null,
+    address: String(body.customer_address ?? "").trim() || null,
+  });
+  if (error) throw new Error(error);
+  return id;
+}
 
 async function syncProductUnit(
   supabase: ReturnType<typeof createAdminClient>,
@@ -91,19 +121,42 @@ export async function POST(request: Request) {
           String(body.reference_no ?? "").trim() || invoiceNumber;
         const total = unitPrice * requested;
 
-        const { data: sale, error: saleError } = await supabase
+        const paymentMethod = parsePaymentMethod(body.payment_method);
+        let customerId: string | null = null;
+        try {
+          customerId = await resolveCustomerId(supabase, body);
+        } catch (e) {
+          return NextResponse.json(
+            { error: (e as Error).message },
+            { status: 400 }
+          );
+        }
+
+        const salePayload: Record<string, string | number | null> = {
+          invoice_number: invoiceNumber,
+          total_amount: total,
+          payment_method: paymentMethod,
+        };
+        if (customerId) salePayload.customer_id = customerId;
+
+        let { data: sale, error: saleError } = await supabase
           .from("sales")
-          .insert({
-            invoice_number: invoiceNumber,
-            total_amount: total,
-            payment_method: "cash",
-          })
+          .insert(salePayload)
           .select("id")
           .single();
 
-        if (saleError) {
+        if (saleError && customerId && saleError.message.includes("customer_id")) {
+          delete salePayload.customer_id;
+          ({ data: sale, error: saleError } = await supabase
+            .from("sales")
+            .insert(salePayload)
+            .select("id")
+            .single());
+        }
+
+        if (saleError || !sale) {
           return NextResponse.json(
-            { error: saleError.message },
+            { error: saleError?.message ?? "Could not record sale" },
             { status: 400 }
           );
         }
@@ -161,7 +214,7 @@ export async function POST(request: Request) {
 
         await syncProductUnit(supabase, productId, body.unit);
 
-        revalidateInventory("stock", "products");
+        revalidateInventory("stock", "products", "customers", "sales");
         return NextResponse.json({
           ok: true,
           sale_id: sale.id,

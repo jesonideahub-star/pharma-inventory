@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { UomSelect } from "@/components/uom-select";
 import type {
+  Customer,
   ProductWithStock,
   Supplier,
   TransactionWithProduct,
@@ -27,18 +28,22 @@ type StockMode = "purchase" | "sales";
 export function StockWorkspace({
   initialProducts,
   initialSuppliers,
+  initialCustomers,
   initialTransactions,
   initialSuccess,
   initialError,
 }: {
   initialProducts: ProductWithStock[];
   initialSuppliers: Supplier[];
+  initialCustomers?: Customer[];
   initialTransactions: TransactionWithProduct[];
   initialSuccess?: string;
   initialError?: string;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
+  const [products, setProducts] = useState(initialProducts);
+  const [customers, setCustomers] = useState(initialCustomers ?? []);
   const [transactions, setTransactions] = useState(initialTransactions);
   const [success, setSuccess] = useState(initialSuccess ?? "");
   const [error, setError] = useState(initialError ?? "");
@@ -51,13 +56,24 @@ export function StockWorkspace({
   const [inUom, setInUom] = useState("pcs");
   const [outUom, setOutUom] = useState("pcs");
   const [mode, setMode] = useState<StockMode>("purchase");
+  const [customerMode, setCustomerMode] = useState<"existing" | "new">("existing");
+  const [inPayment, setInPayment] = useState("cash");
+  const [outPayment, setOutPayment] = useState("cash");
 
   const selectedInProduct =
-    initialProducts.find((p) => p.id === inProductId) ?? null;
+    products.find((p) => p.id === inProductId) ?? null;
   const selectedOutProduct =
-    initialProducts.find((p) => p.id === outProductId) ?? null;
+    products.find((p) => p.id === outProductId) ?? null;
 
   const saleTotal = (Number(outQty) || 0) * (Number(outPrice) || 0);
+
+  useEffect(() => {
+    setProducts(initialProducts);
+  }, [initialProducts]);
+
+  useEffect(() => {
+    setCustomers(initialCustomers ?? []);
+  }, [initialCustomers]);
 
   useEffect(() => {
     setTransactions(initialTransactions);
@@ -87,6 +103,37 @@ export function StockWorkspace({
       }
 
       setSuccess(data.message ?? "Done");
+      const qty = Number(payload.quantity) || 0;
+      const productId = String(payload.product_id ?? "");
+      if (productId && qty > 0) {
+        setProducts((prev) =>
+          prev.map((p) =>
+            p.id === productId
+              ? {
+                  ...p,
+                  total_stock:
+                    action === "in"
+                      ? p.total_stock + qty
+                      : Math.max(0, p.total_stock - qty),
+                }
+              : p
+          )
+        );
+      }
+      const newName = String(payload.customer_name ?? "").trim();
+      if (action === "out" && newName && !String(payload.customer_id ?? "").trim()) {
+        setCustomers((prev) => [
+          {
+            id: `temp-${Date.now()}`,
+            full_name: newName,
+            phone: String(payload.customer_phone ?? "") || null,
+            email: String(payload.customer_email ?? "") || null,
+            address: String(payload.customer_address ?? "") || null,
+            created_at: new Date().toISOString(),
+          },
+          ...prev,
+        ]);
+      }
       form.reset();
       startTransition(() => router.refresh());
       return true;
@@ -163,6 +210,7 @@ export function StockWorkspace({
               if (ok) {
                 setInProductId("");
                 setInUom("pcs");
+                setInPayment("cash");
               }
             }}
           >
@@ -179,16 +227,16 @@ export function StockWorkspace({
                 onChange={(e) => {
                   const id = e.target.value;
                   setInProductId(id);
-                  const product = initialProducts.find((p) => p.id === id);
+                  const product = products.find((p) => p.id === id);
                   setInUom(normalizeProductUom(product?.unit) ?? "pcs");
                 }}
               >
                 <option value="" disabled>
                   Choose a product…
                 </option>
-                {initialProducts.map((p) => (
+                {products.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.product_name} ({p.sku})
+                    {p.product_name} — {p.total_stock} in stock
                   </option>
                 ))}
               </select>
@@ -277,6 +325,22 @@ export function StockWorkspace({
                   </select>
                 </div>
                 <div>
+                  <label className={labelClass} htmlFor="in-payment">
+                    Payment method
+                  </label>
+                  <select
+                    id="in-payment"
+                    name="payment_method"
+                    className={inputClass}
+                    value={inPayment}
+                    onChange={(e) => setInPayment(e.target.value)}
+                  >
+                    <option value="cash">Cash</option>
+                    <option value="card">Card</option>
+                    <option value="gcash">GCash</option>
+                  </select>
+                </div>
+                <div>
                   <label className={labelClass} htmlFor="in-ref">
                     Reference
                   </label>
@@ -312,6 +376,8 @@ export function StockWorkspace({
                 setOutQty("");
                 setOutPrice("");
                 setOutUom("pcs");
+                setOutPayment("cash");
+                setCustomerMode("existing");
               }
             }}
           >
@@ -328,7 +394,7 @@ export function StockWorkspace({
                 onChange={(e) => {
                   const id = e.target.value;
                   setOutProductId(id);
-                  const product = initialProducts.find((p) => p.id === id);
+                  const product = products.find((p) => p.id === id);
                   setOutUom(normalizeProductUom(product?.unit) ?? "pcs");
                   setOutPrice(
                     product ? String(product.selling_price ?? "") : ""
@@ -338,7 +404,7 @@ export function StockWorkspace({
                 <option value="" disabled>
                   Choose a product…
                 </option>
-                {initialProducts.map((p) => (
+                {products.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.product_name} — {p.total_stock} in stock
                   </option>
@@ -407,21 +473,141 @@ export function StockWorkspace({
                 </span>
               </div>
             )}
+            <div>
+              <div className="mb-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCustomerMode("existing")}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+                    customerMode === "existing"
+                      ? "bg-teal-600 text-white"
+                      : "border border-slate-200 bg-white text-slate-600"
+                  }`}
+                >
+                  Existing customer
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCustomerMode("new")}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+                    customerMode === "new"
+                      ? "bg-teal-600 text-white"
+                      : "border border-slate-200 bg-white text-slate-600"
+                  }`}
+                >
+                  New customer
+                </button>
+              </div>
+              {customerMode === "existing" ? (
+                <div>
+                  <label className={labelClass} htmlFor="out-customer">
+                    Customer
+                  </label>
+                  <select
+                    id="out-customer"
+                    name="customer_id"
+                    className={inputClass}
+                    defaultValue=""
+                  >
+                    <option value="">Walk-in (no customer)</option>
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.full_name ?? "Unnamed"}
+                        {c.phone ? ` — ${c.phone}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                    <label className={labelClass} htmlFor="out-customer-name">
+                      Customer name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      id="out-customer-name"
+                      name="customer_name"
+                      required
+                      placeholder="Full name"
+                      className={inputClass}
+                    />
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className={labelClass} htmlFor="out-customer-phone">
+                        Phone
+                      </label>
+                      <input
+                        id="out-customer-phone"
+                        name="customer_phone"
+                        placeholder="09xx…"
+                        className={inputClass}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass} htmlFor="out-customer-email">
+                        Email
+                      </label>
+                      <input
+                        id="out-customer-email"
+                        name="customer_email"
+                        type="email"
+                        placeholder="optional"
+                        className={inputClass}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className={labelClass} htmlFor="out-customer-address">
+                      Address
+                    </label>
+                    <input
+                      id="out-customer-address"
+                      name="customer_address"
+                      placeholder="optional"
+                      className={inputClass}
+                    />
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    New customers are added to the Customer list when you save
+                    the sale.
+                  </p>
+                </div>
+              )}
+            </div>
             <details className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-2">
               <summary className="cursor-pointer text-sm font-medium text-slate-600">
                 More options
               </summary>
-              <div className="mt-3 pb-1">
-                <label className={labelClass} htmlFor="out-ref">
-                  Reference
-                </label>
-                <input
-                  id="out-ref"
-                  name="reference_no"
-                  placeholder="Invoice or Rx number"
-                  className={inputClass}
-                />
-                <p className="mt-2 text-xs text-slate-400">
+              <div className="mt-3 space-y-4 pb-1">
+                <div>
+                  <label className={labelClass} htmlFor="out-payment">
+                    Payment method
+                  </label>
+                  <select
+                    id="out-payment"
+                    name="payment_method"
+                    className={inputClass}
+                    value={outPayment}
+                    onChange={(e) => setOutPayment(e.target.value)}
+                  >
+                    <option value="cash">Cash</option>
+                    <option value="card">Card</option>
+                    <option value="gcash">GCash</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={labelClass} htmlFor="out-ref">
+                    Reference
+                  </label>
+                  <input
+                    id="out-ref"
+                    name="reference_no"
+                    placeholder="Invoice or Rx number"
+                    className={inputClass}
+                  />
+                </div>
+                <p className="text-xs text-slate-400">
                   Price 0 = remove stock only (damaged/expired).
                 </p>
               </div>

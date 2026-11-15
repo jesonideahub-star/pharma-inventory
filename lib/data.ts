@@ -110,25 +110,27 @@ export const getProductsWithStock = cache(
           }
         }
 
+        const flatRegister = await isFlatRegister(supabase);
+
         return (productsRes.data as unknown as ProductWithStock[]).map(
           (product) => {
             const batchStock = stockByProduct.get(product.id);
             const flatQty = Number(
               (product as ProductWithStock & { quantity?: number }).quantity ?? 0
             );
-            const entry = batchStock ?? {
-              total: flatQty,
-              nearestExpiry:
-                (product as ProductWithStock & { expiry_date?: string | null })
-                  .expiry_date ??
-                (product as ProductWithStock & { exp_date?: string | null })
-                  .exp_date ??
-                null,
-            };
+            const flatExpiry =
+              (product as ProductWithStock & { expiry_date?: string | null })
+                .expiry_date ??
+              (product as ProductWithStock & { exp_date?: string | null })
+                .exp_date ??
+              null;
+            const useFlat = flatRegister || !batchStock;
             return {
               ...product,
-              total_stock: entry.total,
-              nearest_expiry: entry.nearestExpiry,
+              total_stock: useFlat ? flatQty : batchStock.total,
+              nearest_expiry: useFlat
+                ? flatExpiry
+                : batchStock.nearestExpiry ?? flatExpiry,
             };
           }
         );

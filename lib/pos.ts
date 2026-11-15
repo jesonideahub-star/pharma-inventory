@@ -123,7 +123,7 @@ export async function deductStockFifo(
 
     if (updateError) throw new Error(updateError.message);
 
-    void supabase.from("inventory_transactions").insert({
+    await logInventoryTransaction(supabase, {
       product_id: productId,
       batch_id: productId,
       transaction_type: "stock_out",
@@ -239,6 +239,96 @@ export type ReceiveStockOptions = {
   expiryDate?: string | null;
 };
 
+async function logInventoryTransaction(
+  supabase: SupabaseClient,
+  row: {
+    product_id: string;
+    batch_id?: string | null;
+    transaction_type: string;
+    quantity: number;
+    reference_no: string;
+  }
+): Promise<void> {
+  const attempts: Record<string, string | number | null>[] = [
+    {
+      product_id: row.product_id,
+      batch_id: row.batch_id ?? null,
+      transaction_type: row.transaction_type,
+      quantity: row.quantity,
+      reference_no: row.reference_no,
+    },
+    {
+      product_id: row.product_id,
+      transaction_type: row.transaction_type,
+      quantity: row.quantity,
+      reference_no: row.reference_no,
+    },
+  ];
+
+  for (const payload of attempts) {
+    const { error } = await supabase.from("inventory_transactions").insert(payload);
+    if (!error) return;
+  }
+}
+
+async function insertPurchaseBatch(
+  supabase: SupabaseClient,
+  productId: string,
+  quantity: number,
+  referenceNo: string,
+  options?: ReceiveStockOptions
+): Promise<string> {
+  const today = new Date().toISOString().slice(0, 10);
+  const batchNumber =
+    options?.batchNumber?.trim() ||
+    `${referenceNo || "PO"}-${Date.now().toString(36).slice(-4)}`;
+
+  let row: Record<string, string | number | null> = {
+    product_id: productId,
+    supplier_id: options?.supplierId ?? null,
+    batch_number: batchNumber,
+    expiry_date: options?.expiryDate?.trim() || null,
+    quantity_received: quantity,
+    quantity_remaining: quantity,
+    purchase_price: options?.unitCost ?? 0,
+    received_date: today,
+  };
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const { data, error } = await supabase
+      .from("product_batches")
+      .insert(row)
+      .select("id")
+      .single();
+
+    if (!error && data) return String(data.id);
+    if (!error) throw new Error("Could not save purchase batch");
+
+    const extraKeys = Object.keys(row).filter(
+      (key) => key !== "product_id" && key !== "quantity_remaining"
+    );
+    const badKeys = extraKeys.filter((key) =>
+      error.message.toLowerCase().includes(key.toLowerCase())
+    );
+    if (badKeys.length === 0) {
+      if (extraKeys.length > 0) {
+        row = {
+          product_id: productId,
+          batch_number: batchNumber,
+          quantity_remaining: quantity,
+        };
+        continue;
+      }
+      throw new Error(error.message);
+    }
+    const next = { ...row };
+    for (const key of badKeys) delete next[key];
+    row = next;
+  }
+
+  throw new Error("Could not save purchase batch");
+}
+
 async function incrementProductQuantity(
   supabase: SupabaseClient,
   productId: string,
@@ -303,53 +393,37 @@ export async function receiveStockForPo(
   referenceNo: string,
   options?: ReceiveStockOptions
 ): Promise<StockAllocation[]> {
+  const flat = await isFlatRegister(supabase);
+  let batchId: string | null = null;
+
+  // Batch-based inventory: a purchase must create/add remaining qty on batches.
+  // Flat register: products.quantity is the source of truth.
+  if (!flat) {
+    batchId = await insertPurchaseBatch(
+      supabase,
+      productId,
+      quantity,
+      referenceNo,
+      options
+    );
+  }
+
   const existing = await loadFlatProductRow(supabase, productId, "maybe");
   if (existing) {
     await incrementProductQuantity(supabase, productId, quantity, options);
-
-    void supabase.from("inventory_transactions").insert({
-      product_id: productId,
-      batch_id: productId,
-      transaction_type: "stock_in",
-      quantity,
-      reference_no: referenceNo,
-    });
-
-    return [{ batch_id: productId, quantity }];
+  } else if (flat) {
+    throw new Error("Product not found");
   }
 
-  const today = new Date().toISOString().slice(0, 10);
-  const batchNumber =
-    options?.batchNumber?.trim() ||
-    `${referenceNo || "PO"}-${Date.now().toString(36).slice(-4)}`;
-  const { data: batch, error: batchError } = await supabase
-    .from("product_batches")
-    .insert({
-      product_id: productId,
-      supplier_id: options?.supplierId ?? null,
-      batch_number: batchNumber,
-      expiry_date: options?.expiryDate?.trim() || null,
-      quantity_received: quantity,
-      quantity_remaining: quantity,
-      purchase_price: options?.unitCost ?? 0,
-      received_date: today,
-    })
-    .select("id")
-    .single();
-
-  if (batchError) throw new Error(batchError.message);
-
-  const { error: txError } = await supabase.from("inventory_transactions").insert({
+  await logInventoryTransaction(supabase, {
     product_id: productId,
-    batch_id: batch.id,
+    batch_id: batchId ?? productId,
     transaction_type: "stock_in",
     quantity,
     reference_no: referenceNo,
   });
 
-  if (txError) throw new Error(txError.message);
-
-  return [{ batch_id: batch.id, quantity }];
+  return [{ batch_id: batchId ?? productId, quantity }];
 }
 
 /** @deprecated Use deductStockFifo */
