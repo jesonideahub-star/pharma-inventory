@@ -171,9 +171,24 @@ export default async function UsersPage({
               </label>
               <RoleSelect id="edit_role" defaultValue={editing.role} />
             </div>
-            {editing.branch_id ? (
-              <input type="hidden" name="branch_id" value={editing.branch_id} />
-            ) : null}
+            <div>
+              <label className={labelClass} htmlFor="edit_branch_id">
+                Branch
+              </label>
+              <select
+                id="edit_branch_id"
+                name="branch_id"
+                defaultValue={editing.branch_id ?? ""}
+                className={inputClass}
+              >
+                <option value="">No branch assigned</option>
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="flex flex-wrap gap-2 sm:col-span-2 lg:col-span-3">
               <button type="submit" className={buttonClass}>
                 Save changes
